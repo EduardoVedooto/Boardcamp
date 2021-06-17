@@ -58,7 +58,14 @@ App.get("/games", async (req, res) => {
     const { name } = req.query;
     if (name) {
         try {
-            const games = await connection.query("SELECT * FROM games WHERE LOWER(name) LIKE '%'|| $1 ||'%'", [name.toLowerCase()]);
+            const games = await connection.query(`
+                SELECT games.*, categories.name AS "category" 
+                FROM games 
+                JOIN categories 
+                ON games."categoryId" = categories.id
+                WHERE LOWER(games.name) LIKE '%'|| $1 ||'%' 
+            `, [name.toLowerCase()]);
+            console.log(games.rows);
             res.send(games.rows);
         } catch (e) {
             console.error(e);
@@ -66,6 +73,14 @@ App.get("/games", async (req, res) => {
     } else {
         try {
             const games = await connection.query("SELECT * FROM games");
+            games.rows.forEach(async game => {
+                const categoryName = await connection.query("SELECT name from categories WHERE id = $1 LIMIT 1", [game.categoryId]);
+                game = {
+                    ...game,
+                    categoryName: categoryName.rows[0].name
+                }
+                console.log(game);
+            });
             res.send(games.rows);
         } catch (e) {
             console.error(e);
