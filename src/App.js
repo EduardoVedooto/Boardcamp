@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import pg from "pg";
 import categoriesSchema from "../schema/categories.schema.js";
+import gamesSchema from "../schema/games.schema.js";
 
 const { Pool } = pg;
 const App = express();
@@ -15,34 +16,13 @@ const connection = new Pool({
     database: 'boardcamp'
 });
 
-/* 
-- Formato de uma categoria (tabela `categories`)
-
-    ```jsx
-    {
-      id: 1,
-      name: 'Estratégia',
-    }
-
-
-- Listar categorias
-    - **Rota**: **GET** /categories
-    - **Response**: lista de todas as categorias cada no formato acima:
-        [
-          {
-            id: 1,
-            name: 'Estratégia',
-          },
-          {
-            id: 2,
-            name: 'Investigação',
-          }
-        ]
-*/
-
 App.get("/categorias", async (req, res) => {
-    const categories = await connection.query("SELECT * FROM categories");
-    res.send(categories.rows);
+    try {
+        const categories = await connection.query(`SELECT * FROM categories`);
+        res.send(categories.rows);
+    } catch (e) {
+        console.error(e);
+    }
 });
 
 App.post("/categorias", async (req, res) => {
@@ -55,21 +35,78 @@ App.post("/categorias", async (req, res) => {
         return;
     }
 
-    //Validation if categorie already axists
-    const existCategorie = await connection.query("SELECT id FROM categories WHERE LOWER(name) = $1 LIMIT 1", [req.body.name.toLowerCase()]);
-    if (existCategorie.rowCount) {
-        res.status(409).send("Categoria já existente.");
+    try {
+        //Validation if categorie already axists
+        const existCategorie = await connection.query("SELECT id FROM categories WHERE LOWER(name) = $1 LIMIT 1", [req.body.name.toLowerCase()]);
+        if (existCategorie.rowCount) {
+            res.status(409).send("Categoria já existente.");
+            return;
+        }
+    } catch (e) {
+        console.error(e);
+    }
+
+    try {
+        await connection.query(`INSERT INTO categories (name) VALUES ($1);`, [req.body.name]);
+        res.sendStatus(201);
+    } catch (e) {
+        console.error(e);
+    }
+});
+
+App.get("/games", async (req, res) => {
+    const { name } = req.query;
+    if (name) {
+        try {
+            const games = await connection.query("SELECT * FROM games WHERE LOWER(name) LIKE '%'|| $1 ||'%'", [name.toLowerCase()]);
+            res.send(games.rows);
+        } catch (e) {
+            console.error(e);
+        }
+    } else {
+        try {
+            const games = await connection.query("SELECT * FROM games");
+            res.send(games.rows);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+});
+
+App.post("/games", async (req, res) => {
+    req.body = {
+        ...req.body,
+        name: req.body.name.trim(),
+    }
+    const validation = gamesSchema(req.body);
+
+    if (validation.error) {
+        res.status(400).send(validation.error.details[0].message);
         return;
     }
 
     try {
-        await connection.query("INSERT INTO categories (name) VALUES ($1);", [req.body.name]);
+        const existGame = await connection.query("SELECT id FROM games WHERE LOWER(name) = $1 LIMIT 1", [req.body.name.toLowerCase()]);
+        if (existGame.rowCount) {
+            res.status(409).send("Jogo já existente");
+            return;
+        }
+    } catch (e) {
+        console.error(e);
+    }
+
+    try {
+        const { name, image, stockTotal, categoryId, pricePerDay } = req.body;
+        await connection.query(`
+            INSERT INTO games ("name", "image", "stockTotal", "categoryId", "pricePerDay") 
+            VALUES ($1, $2, $3, $4, $5);`,
+            [name, image, stockTotal, categoryId, pricePerDay]
+        );
         res.sendStatus(201);
     } catch (e) {
-        console.log(e);
+        console.error(e);
     }
 });
-
 
 
 
