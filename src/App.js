@@ -5,6 +5,7 @@ import categoriesSchema from "../schema/categories.schema.js";
 import gamesSchema from "../schema/games.schema.js";
 import customersSchema from "../schema/customers.schema.js";
 import DateFormatter from "./utils/DateFormatter.js";
+import ArrayFormatter from "./utils/ArrayFormatter.js";
 
 const { Pool } = pg;
 const App = express();
@@ -30,14 +31,14 @@ App.get("/categorias", async (req, res) => {
 });
 
 App.post("/categorias", async (req, res) => {
-    req.body.name = req.body.name.trim();
     const validation = categoriesSchema(req.body);
-
     //Validation if name value is not empty
     if (validation.error) {
         res.status(400).send("Campo 'name' não pode estar vazio.");
         return;
     }
+
+    req.body.name = req.body.name.trim();
 
     try {
         //Validation if categorie already axists
@@ -73,7 +74,6 @@ App.get("/games", async (req, res) => {
                 ON games."categoryId" = categories.id
                 WHERE LOWER(games.name) LIKE '%'|| $1 ||'%' 
             `, [name.toLowerCase()]);
-            console.log(games.rows);
             res.send(games.rows);
         } catch (e) {
             console.error(e);
@@ -89,7 +89,6 @@ App.get("/games", async (req, res) => {
                     ...game,
                     categoryName: categoryName.rows[0].name
                 }
-                console.log(game);
             });
             res.send(games.rows);
         } catch (e) {
@@ -100,16 +99,18 @@ App.get("/games", async (req, res) => {
 });
 
 App.post("/games", async (req, res) => {
-    req.body = {
-        ...req.body,
-        name: req.body.name.trim(),
-    };
+
     const validation = gamesSchema(req.body);
 
     if (validation.error) {
         res.status(400).send(validation.error.details[0].message);
         return;
     }
+
+    req.body = {
+        ...req.body,
+        name: req.body.name.trim(),
+    };
 
     try {
         const existGame = await connection.query("SELECT id FROM games WHERE LOWER(name) = $1 LIMIT 1", [req.body.name.toLowerCase()]);
@@ -160,7 +161,6 @@ App.get("/customers", async (req, res) => {
     } else {
         try {
             const customers = await connection.query(`SELECT * FROM customers;`);
-            console.log(customers.fields);
             customers.rows.forEach(customer => customer.birthday = DateFormatter(new Date(customer.birthday)));
             res.send(customers.rows);
         } catch (e) {
@@ -182,14 +182,15 @@ App.get("/customers/:id", async (req, res) => {
 });
 
 App.post("/customers", async (req, res) => {
-    Object.keys(req.body).forEach(key => req.body[key] = req.body[key].trim());
-    const { name, phone, cpf, birthday } = req.body;
     const validation = customersSchema(req.body);
 
     if (validation.error) {
         res.status(400).send(validation.error.details[0].message);
         return;
     }
+
+    Object.keys(req.body).forEach(key => req.body[key] = req.body[key].trim());
+    const { name, phone, cpf, birthday } = req.body;
 
     const existCpf = await connection.query(`SELECT id FROM customers WHERE cpf = $1 LIMIT 1`, [cpf]);
     if (existCpf.rowCount) {
@@ -211,14 +212,14 @@ App.post("/customers", async (req, res) => {
 });
 
 App.put("/customers/:id", async (req, res) => {
-    Object.keys(req.body).forEach(key => req.body[key] = req.body[key].trim());
-    const { name, phone, cpf, birthday } = req.body;
     const validation = customersSchema(req.body);
 
     if (validation.error) {
         res.status(400).send(validation.error.details[0].message);
         return;
     }
+    Object.keys(req.body).forEach(key => req.body[key] = req.body[key].trim());
+    const { name, phone, cpf, birthday } = req.body;
 
     const existCustomer = await connection.query(`
         SELECT id 
@@ -253,4 +254,167 @@ App.put("/customers/:id", async (req, res) => {
     }
 });
 
-App.listen(4000, () => { console.log("Running server on port 4000...") });
+App.post("/rentals", async (req, res) => {
+    const { customerId, gameId, daysRented } = req.body;
+    if (isNaN(daysRented) || daysRented <= 0) {
+        res.status(400).send("Dias alugado deve ser um número válido e maior que 0.");
+        return;
+    }
+
+    if (isNaN(customerId) || isNaN(gameId)) {
+        res.status(400).send("Os campos ID's devem conter apenas números.");
+        return;
+    }
+
+    try {
+        const verification = await connection.query(`
+            SELECT customers.id AS "customerId", games."pricePerDay"
+            FROM customers 
+            CROSS JOIN games 
+            WHERE customers.id = $1 AND games.id = $2 
+            LIMIT 1
+        `, [customerId, gameId]);
+
+        if (!verification.rowCount) {
+            res.status(400).send("CustomerID ou GameID não existem.");
+            return;
+        }
+
+        await connection.query(`
+            INSERT INTO rentals 
+            ("customerId","gameId","rentDate","daysRented","returnDate","originalPrice","delayFee")
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `, [
+            customerId,
+            gameId,
+            new Date,
+            daysRented,
+            null,
+            verification.rows[0].pricePerDay * daysRented,
+            null
+        ]);
+
+        res.sendStatus(201);
+    } catch (e) {
+        console.error(e);
+        res.sendStatus(500);
+    }
+
+});
+
+App.post("/rentals/:id/return", async (req, res) => {
+    try {
+        const rentalInformation = await connection.query(`
+            SELECT rentals."rentDate", rentals."daysRented", rentals."returnDate", games."pricePerDay"
+            FROM rentals
+            JOIN games
+            ON rentals."gameId" = games.id
+            WHERE rentals.id = $1
+            LIMIT 1
+        `, [req.params.id]);
+
+        if (!rentalInformation.rowCount || rentalInformation.rows[0].returnDate !== null) {
+            res.status(400).send(`ID: ${req.params.id} não corresponde a nenhum aluguel ativo.`);
+            return;
+        }
+
+        const { rentDate, daysRented, pricePerDay } = rentalInformation.rows[0];
+        const daysReallyRented = parseInt((new Date - new Date(rentDate)) / 86400000);
+        const delayedDays = daysReallyRented - daysRented;
+        const delayFee = delayedDays > 0 ? delayedDays * pricePerDay : 0;
+
+        await connection.query(`
+            UPDATE rentals 
+            SET "returnDate" = 'NOW()',
+                "delayFee" = $1
+            WHERE id = $2
+        `, [delayFee, req.params.id]);
+
+        res.sendStatus(200);
+    } catch (e) {
+        console.error(e);
+        res.sendStatus(500);
+    }
+});
+
+App.delete("/rentals/:id", async (req, res) => {
+    try {
+        const verification = await connection.query(`
+            SELECT "returnDate"
+            FROM rentals
+            WHERE id = $1
+        `, [req.params.id]);
+
+        if (!verification.rowCount) {
+            res.status(404).send(`ID: ${req.params.id} não corresponde a nenhum aluguel.`);
+            return;
+        }
+        if (verification.rows[0].rentDate !== null) {
+            res.status(400).send(`Aluguel já finalizado`);
+            return;
+        }
+
+        await connection.query(`DELETE FROM rentals WHERE id = $1`, [req.params.id]);
+        res.sendStatus(200);
+    } catch (e) {
+        console.error(e);
+        res.sendStatus(500);
+    }
+});
+
+App.get("/rentals", async (req, res) => {
+    const filterCustomer = req.query.customerId;
+    const filterGame = req.query.gameId;
+    if (filterCustomer || filterGame) {
+        try {
+            const rentals = await connection.query(`
+                SELECT 
+                    r.*,
+                    c.id AS "customerId",
+                    c.name AS "customerName",
+                    g.id AS "gameId",
+                    g.name AS "gameName",
+                    g."categoryId",
+                    cat.name AS "categoryName"
+                FROM rentals r 
+                JOIN customers c ON r."customerId" = c.id
+                JOIN games g ON r."gameId" = g.id
+                JOIN categories cat ON g."categoryId" = cat.id
+                WHERE ${filterCustomer ? "c.id = $1" : "g.id = $1"} ${filterGame ? filterCustomer ? "AND g.id = $2" : "" : ""}
+            `, filterCustomer ? filterGame ? [filterCustomer, filterGame] : [filterCustomer] : [filterGame]);
+
+            const formattedArray = rentals.rows.map(rental => ArrayFormatter(rental));
+            res.status(200).send(formattedArray);
+
+        } catch (e) {
+            console.error(e);
+            res.sendStatus(500);
+        }
+    } else {
+        try {
+            const rentals = await connection.query(`
+                SELECT 
+                    r.*,
+                    c.id AS "customerId",
+                    c.name AS "customerName",
+                    g.id AS "gameId",
+                    g.name AS "gameName",
+                    g."categoryId",
+                    cat.name AS "categoryName"
+                FROM rentals r 
+                JOIN customers c ON r."customerId" = c.id
+                JOIN games g ON r."gameId" = g.id
+                JOIN categories cat ON g."categoryId" = cat.id
+            `);
+
+            const formattedArray = rentals.rows.map(rental => ArrayFormatter(rental));
+
+            res.status(200).send(formattedArray);
+        } catch (e) {
+            console.error(e);
+            res.sendStatus(500);
+        }
+    }
+});
+
+App.listen(4000, () => { console.info("Running server on port 4000...") });
